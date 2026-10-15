@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Household Planner",
+        "description": "Requires the companion patched Donetick build documented in the repository. One household per HA installation. User IDs are available in Settings \u2192 People \u2192 Users. Assign task effort and rooms in the card after setup.",
+        "data": {
+          "name": "Household name",
+          "base_url": "Donetick URL (private IP, with port)",
+          "api_key": "Donetick API key",
+          "manager_id": "Manager Home Assistant user ID (administrator)",
+          "reader_ids": "Read-only HA user IDs (comma-separated)",
+          "writer_ids": "HA user IDs allowed to complete tasks (comma-separated)",
+          "no_sunday_vacuum": "Do not schedule vacuuming on Sunday",
+          "monday": "Monday effort-point budget",
+          "tuesday": "Tuesday effort-point budget",
+          "wednesday": "Wednesday effort-point budget",
+          "thursday": "Thursday effort-point budget",
+          "friday": "Friday effort-point budget",
+          "saturday": "Saturday effort-point budget",
+          "sunday": "Sunday effort-point budget"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot verify the supported backend and API key. Check the companion build and network address.",
+      "invalid_manager": "The manager must be an active human HA administrator."
+    },
+    "abort": {
+      "already_configured": "A household is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Planning options",
+        "description": "Changes affect new daily plans. An existing plan stays unchanged; use Preview new plan in the card to rebuild it explicitly.",
+        "data": {
+          "gentle_smoothing": "Gently distribute tasks",
+          "no_sunday_vacuum": "Keep Sundays free of vacuuming"
+        },
+        "data_description": {
+          "gentle_smoothing": "Move suitable tasks up to two days earlier to balance effort against each day\u2019s budget. Original due dates, fixed dates and frequent chores stay unchanged. Off by default.",
+          "no_sunday_vacuum": "Do not plan vacuuming on Sundays. Other chores may still be scheduled."
+        }
+      }
+    }
+  }
+}

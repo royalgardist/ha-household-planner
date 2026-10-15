@@ -1,0 +1,14 @@
+{
+  "domain": "household_planner",
+  "name": "Household Planner",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/royalgardist/ha-household-planner",
+  "issue_tracker": "https://github.com/royalgardist/ha-household-planner/issues",
+  "codeowners": [
+    "@royalgardist"
+  ],
+  "iot_class": "local_polling",
+  "requirements": [],
+  "integration_type": "service"
+}

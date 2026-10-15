@@ -1,0 +1,218 @@
+get_today:
+  name: get_today
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+sync:
+  name: sync
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+generate_today_plan:
+  name: generate_today_plan
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+complete_task:
+  name: complete_task
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+    plan_id:
+      name: plan_id
+      required: true
+      selector:
+        text: {}
+    occurrence_id:
+      name: occurrence_id
+      required: true
+      selector:
+        text: {}
+    plan_revision:
+      name: plan_revision
+      required: true
+      selector:
+        object: {}
+    request_id:
+      name: request_id
+      required: true
+      selector:
+        text: {}
+replan_today:
+  name: replan_today
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+    plan_id:
+      name: plan_id
+      required: true
+      selector:
+        text: {}
+    plan_revision:
+      name: plan_revision
+      required: true
+      selector:
+        object: {}
+    dry_run:
+      name: dry_run
+      required: false
+      selector:
+        boolean: {}
+    preview_id:
+      name: preview_id
+      required: false
+      selector:
+        text: {}
+    request_id:
+      name: request_id
+      required: false
+      selector:
+        text: {}
+cancel_pending:
+  name: cancel_pending
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+    request_id:
+      name: request_id
+      required: true
+      selector:
+        text: {}
+get_settings:
+  name: get_settings
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+set_week_budget:
+  name: set_week_budget
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+    budgets:
+      name: budgets
+      required: true
+      selector:
+        object: {}
+set_task_metadata:
+  name: set_task_metadata
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+    task_id:
+      name: task_id
+      required: true
+      selector:
+        text: {}
+    weight:
+      name: weight
+      required: true
+      selector:
+        object: {}
+    area:
+      name: area
+      required: true
+      selector:
+        text: {}
+    contains_vacuuming:
+      name: contains_vacuuming
+      required: true
+      selector:
+        object: {}
+    fixed_date:
+      name: fixed_date
+      required: false
+      selector:
+        object: {}
+    advance_days:
+      name: advance_days
+      required: false
+      selector:
+        object: {}
+manage_task:
+  name: manage_task
+  description: "Response required. See the repository README for parameters and access roles."
+  fields:
+    config_entry_id:
+      name: config_entry_id
+      required: true
+      selector:
+        text: {}
+    request_id:
+      name: request_id
+      required: true
+      selector:
+        text: {}
+    operation:
+      name: operation
+      required: true
+      selector:
+        object: {}
+    task_id:
+      name: task_id
+      required: false
+      selector:
+        text: {}
+    fields:
+      name: fields
+      required: false
+      selector:
+        object: {}
+
+complete_extra_task:
+  name: Zusatzaufgabe erledigen
+  description: Echte Erledigung außerhalb des Tagesplans; fünf Sekunden abbrechbar.
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        text: {}
+    task_id:
+      required: true
+      selector:
+        text: {}
+    sync_version:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    request_id:
+      required: true
+      selector:
+        text: {}
