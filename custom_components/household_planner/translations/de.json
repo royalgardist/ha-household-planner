@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Household Planner",
+        "description": "Requires the companion patched Donetick build documented in the repository. One household per HA installation. User IDs are available in Settings → People → Users. Assign task effort and rooms in the card after setup.",
+        "data": {
+          "name": "Household name",
+          "base_url": "Donetick URL (private IP, with port)",
+          "api_key": "Donetick API key",
+          "manager_id": "Manager Home Assistant user ID (administrator)",
+          "reader_ids": "Read-only HA user IDs (comma-separated)",
+          "writer_ids": "HA user IDs allowed to complete tasks (comma-separated)",
+          "no_sunday_vacuum": "Do not schedule vacuuming on Sunday",
+          "monday": "Monday effort-point budget",
+          "tuesday": "Tuesday effort-point budget",
+          "wednesday": "Wednesday effort-point budget",
+          "thursday": "Thursday effort-point budget",
+          "friday": "Friday effort-point budget",
+          "saturday": "Saturday effort-point budget",
+          "sunday": "Sunday effort-point budget"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot verify the supported backend and API key. Check the companion build and network address.",
+      "invalid_manager": "The manager must be an active human HA administrator."
+    },
+    "abort": {
+      "already_configured": "A household is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Planung einstellen",
+        "description": "Änderungen gelten für neue Tagespläne. Ein bestehender Plan bleibt erhalten; bei Bedarf in der Karte eine Neuplanung als Vorschau öffnen.",
+        "data": {
+          "gentle_smoothing": "Aufgaben sanft verteilen",
+          "no_sunday_vacuum": "Sonntags nicht staubsaugen"
+        },
+        "data_description": {
+          "gentle_smoothing": "Geeignete Aufgaben höchstens zwei Tage vorziehen, um die Arbeit passend zu den Tagesbudgets zu verteilen. Ursprüngliche Fälligkeiten, feste Termine und häufige Aufgaben bleiben unverändert. Standardmäßig aus.",
+          "no_sunday_vacuum": "Sonntags keine Staubsaugaufgaben einplanen. Andere Aufgaben sind weiterhin möglich."
+        }
+      }
+    }
+  }
+}
