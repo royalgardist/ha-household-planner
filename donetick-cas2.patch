@@ -1,0 +1,612 @@
+diff --git a/internal/chore/handler.go b/internal/chore/handler.go
+index e6c99a7..3c3e0f9 100644
+--- a/internal/chore/handler.go
++++ b/internal/chore/handler.go
+@@ -304,6 +304,7 @@ func (h *Handler) signAttachments(c *gin.Context, attachments []storageModel.Sto
+ 
+ // region: request models
+ type ChoreReq struct {
++	SyncVersion          *int64                        `json:"syncVersion,omitempty"`
+ 	ID                   int                           `json:"id"`
+ 	Name                 string                        `json:"name" binding:"required"`
+ 	FrequencyType        chModel.FrequencyType         `json:"frequencyType" binding:"required,oneof=once daily weekly monthly yearly adaptive interval days_of_the_week day_of_the_month trigger no_repeat"`
+@@ -771,6 +772,10 @@ func (h *Handler) EditChore(c *gin.Context) {
+ 		})
+ 		return
+ 	}
++	if choreReq.SyncVersion != nil && (*choreReq.SyncVersion <= 0 || *choreReq.SyncVersion != oldChore.SyncVersion) {
++		c.JSON(http.StatusConflict, gin.H{"error": "chore version conflict"})
++		return
++	}
+ 	if err := oldChore.CanEdit(currentUser.ID, circleUsers, choreReq.UpdatedAt); err != nil {
+ 		c.JSON(403, gin.H{
+ 			"error": fmt.Sprintf("You cannot edit this chore: %s", err.Error()),
+@@ -859,7 +864,12 @@ func (h *Handler) EditChore(c *gin.Context) {
+ 	for _, assignee := range choreReq.Assignees {
+ 		assigneeIDs = append(assigneeIDs, assignee.UserID)
+ 	}
++	updatedChore.SyncVersion = oldChore.SyncVersion
+ 	if err := h.choreRepo.UpdateChoreVisibility(c, updatedChore, assigneeIDs); err != nil {
++		if errors.Is(err, chRepo.ErrChoreConflict) {
++			c.JSON(http.StatusConflict, gin.H{"error": "chore version conflict"})
++			return
++		}
+ 		c.JSON(500, gin.H{
+ 			"error": "Error adding chore",
+ 		})
+@@ -913,7 +923,6 @@ func (h *Handler) EditChore(c *gin.Context) {
+ 		}
+ 	}
+ 
+-
+ 	if dueDatesDiffer(oldChore.NextDueDate, updatedChore.NextDueDate) {
+ 		historyEntry := &chModel.ChoreHistory{
+ 			ChoreID:     oldChore.ID,
+@@ -2109,12 +2118,18 @@ func (h *Handler) UnarchiveChore(c *gin.Context) {
+ 
+ // region: request models
+ 
++type HouseholdFloorResetReq struct {
++	ID          int   `json:"id" binding:"required,min=1"`
++	SyncVersion int64 `json:"syncVersion" binding:"required,min=1"`
++}
++
+ type CompleteChoreReq struct { // TODO: Remove "Note" in future.
+-	Notes         *string        `json:"notes" binding:"omitempty,min=1"`
+-	Note          *string        `json:"note" binding:"omitempty,min=1"` // This is going to be deprecated in future release, use "Notes" instead.
+-	CompletedBy   *int           `json:"completedBy"`                    // The completed by only can be populated by the admin or super user.
+-	CompletedDate *time.Time     `json:"completedTime"`                  // Completion date in RFC3339 format (defaults to now).
+-	ActionOptions *ActionOptions `json:"actionOptions"`
++	FloorResets   []HouseholdFloorResetReq `json:"floorResets" binding:"max=250,dive"`
++	Notes         *string                  `json:"notes" binding:"omitempty,min=1"`
++	Note          *string                  `json:"note" binding:"omitempty,min=1"` // This is going to be deprecated in future release, use "Notes" instead.
++	CompletedBy   *int                     `json:"completedBy"`                    // The completed by only can be populated by the admin or super user.
++	CompletedDate *time.Time               `json:"completedTime"`                  // Completion date in RFC3339 format (defaults to now).
++	ActionOptions *ActionOptions           `json:"actionOptions"`
+ }
+ 
+ // endregion
+@@ -2281,6 +2296,10 @@ func (h *Handler) CompleteChore(c *gin.Context) {
+ 	}
+ 
+ 	// Check if chore requires approval
++	if chore.RequireApproval && len(req.FloorResets) > 0 {
++		c.JSON(http.StatusBadRequest, gin.H{"error": "floor approval unsupported"})
++		return
++	}
+ 	if chore.RequireApproval {
+ 		// Set chore status to pending approval instead of completing
+ 		if err := h.choreRepo.SetChorePendingApproval(c, chore, note, completedBy, &completedDate); err != nil {
+@@ -2325,7 +2344,31 @@ func (h *Handler) CompleteChore(c *gin.Context) {
+ 		return
+ 	}
+ 
+-	if err := h.choreRepo.CompleteChore(c, chore, note, completedBy, nextDueDate, &completedDate, nextAssignedTo, true); err != nil {
++	resets := make([]chRepo.HouseholdFloorReset, 0, len(req.FloorResets))
++	seenResets := map[int]bool{chore.ID: true}
++	for _, reset := range req.FloorResets {
++		related, err := h.choreRepo.GetChore(c, reset.ID, effectiveUser.ID, actualUser.CircleID)
++		if err != nil || related == nil || seenResets[reset.ID] || related.SyncVersion != reset.SyncVersion ||
++			!related.IsActive || related.RequireApproval || !related.CanComplete(effectiveUser.ID, circleUsers) {
++			c.JSON(http.StatusConflict, gin.H{"error": "floor reset conflict"})
++			return
++		}
++		seenResets[reset.ID] = true
++		// The reset starts at the real cleaning time, using the source scheduler.
++		snapshot := *related
++		snapshot.IsRolling = true
++		next, err := scheduleNextDueDate(c, &snapshot, completedDate.UTC())
++		if err != nil || next == nil {
++			c.JSON(http.StatusBadRequest, gin.H{"error": "floor recurrence unsupported"})
++			return
++		}
++		resets = append(resets, chRepo.HouseholdFloorReset{Chore: related, NextDueDate: next})
++	}
++	if err := h.choreRepo.CompleteChore(c, chore, note, completedBy, nextDueDate, &completedDate, nextAssignedTo, true, resets...); err != nil {
++		if errors.Is(err, chRepo.ErrChoreConflict) {
++			c.JSON(http.StatusConflict, gin.H{"error": "chore version conflict"})
++			return
++		}
+ 		c.JSON(500, gin.H{
+ 			"error": "Error completing chore",
+ 		})
+diff --git a/internal/chore/repo/household_cas_test.go b/internal/chore/repo/household_cas_test.go
+new file mode 100644
+index 0000000..455ae08
+--- /dev/null
++++ b/internal/chore/repo/household_cas_test.go
+@@ -0,0 +1,134 @@
++package chore
++
++import (
++	"context"
++	chModel "donetick.com/core/internal/chore/model"
++	cModel "donetick.com/core/internal/circle/model"
++	syncModel "donetick.com/core/internal/sync/model"
++	"errors"
++	"github.com/stretchr/testify/require"
++	"gorm.io/gorm"
++	"sync"
++	"testing"
++	"time"
++)
++
++func householdCASFixture(t *testing.T) (*ChoreRepository, *gorm.DB, chModel.Chore, time.Time, time.Time) {
++	r, db := newVisibilityTestRepository(t)
++	require.NoError(t, db.AutoMigrate(&chModel.ChoreHistory{}, &chModel.TimeSession{}))
++	sqlDB, err := db.DB()
++	require.NoError(t, err)
++	sqlDB.SetMaxOpenConns(1)
++	t.Cleanup(func() { sqlDB.Close() })
++	due := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
++	next := due.Add(24 * time.Hour)
++	p := 3
++	ch := chModel.Chore{ID: 900, CircleID: 1, CreatedBy: 1, Name: "CAS fixture", SyncVersion: 7, IsActive: true, NextDueDate: &due, Points: &p, FrequencyType: "daily"}
++	seedVisibilityTest(t, db, &ch, 1)
++	require.NoError(t, db.Create(&syncModel.SyncCursor{CircleID: 1, EntityType: syncModel.EntityTypeChore, MaxVersion: 7}).Error)
++	return r, db, ch, due, next
++}
++func householdCASAssert(t *testing.T, db *gorm.DB, ch chModel.Chore, next time.Time) {
++	var histories []chModel.ChoreHistory
++	require.NoError(t, db.Where("chore_id = ?", ch.ID).Find(&histories).Error)
++	require.Len(t, histories, 1)
++	require.Equal(t, *ch.NextDueDate, *histories[0].DueDate)
++	var actual chModel.Chore
++	require.NoError(t, db.First(&actual, ch.ID).Error)
++	require.Equal(t, next, *actual.NextDueDate)
++	require.Equal(t, int64(8), actual.SyncVersion)
++	var user cModel.UserCircle
++	require.NoError(t, db.Where("user_id = ? AND circle_id = ?", 1, ch.CircleID).First(&user).Error)
++	require.Equal(t, 3, user.Points)
++}
++func TestHouseholdCASNormalCompletion(t *testing.T) {
++	r, db, ch, due, next := householdCASFixture(t)
++	require.NoError(t, r.CompleteChore(context.Background(), &ch, nil, 1, &next, &due, nil, true))
++	householdCASAssert(t, db, ch, next)
++}
++func TestHouseholdCASConcurrentSameOccurrence(t *testing.T) {
++	r, db, ch, due, next := householdCASFixture(t)
++	start := make(chan struct{})
++	results := make(chan error, 2)
++	var wg sync.WaitGroup
++	for i := 0; i < 2; i++ {
++		snapshot := ch
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			<-start
++			results <- r.CompleteChore(context.Background(), &snapshot, nil, 1, &next, &due, nil, true)
++		}()
++	}
++	close(start)
++	wg.Wait()
++	close(results)
++	success, conflicts := 0, 0
++	for err := range results {
++		if err == nil {
++			success++
++		} else if errors.Is(err, ErrChoreConflict) {
++			conflicts++
++		} else {
++			t.Fatal(err)
++		}
++	}
++	require.Equal(t, 1, success)
++	require.Equal(t, 1, conflicts)
++	householdCASAssert(t, db, ch, next)
++}
++func TestHouseholdCASStaleEditCannotUndoCompletion(t *testing.T) {
++	r, db, ch, due, next := householdCASFixture(t)
++	old := ch
++	require.NoError(t, r.CompleteChore(context.Background(), &ch, nil, 1, &next, &due, nil, true))
++	old.Name = "Stale edit"
++	require.ErrorIs(t, r.UpdateChoreVisibility(context.Background(), &old, []int{1}), ErrChoreConflict)
++	householdCASAssert(t, db, ch, next)
++	var actual chModel.Chore
++	require.NoError(t, db.First(&actual, ch.ID).Error)
++	require.Equal(t, "CAS fixture", actual.Name)
++}
++
++func TestHouseholdFloorResetAtomicNoExtraHistoryOrPoints(t *testing.T) {
++	r, db, mop, due, next := householdCASFixture(t)
++	vacuum := mop
++	vacuum.ID = 901
++	vacuum.Name = "Vacuum fixture"
++	require.NoError(t, db.Create(&vacuum).Error)
++	require.NoError(t, db.Create(&chModel.ChoreAssignees{ChoreID: vacuum.ID, UserID: 1}).Error)
++	resetDue := due.Add(72 * time.Hour)
++	require.NoError(t, r.CompleteChore(context.Background(), &mop, nil, 1, &next, &due, nil, true,
++		HouseholdFloorReset{Chore: &vacuum, NextDueDate: &resetDue}))
++	var actual chModel.Chore
++	require.NoError(t, db.First(&actual, vacuum.ID).Error)
++	require.Equal(t, resetDue, *actual.NextDueDate)
++	require.Equal(t, int64(9), actual.SyncVersion)
++	var count int64
++	require.NoError(t, db.Model(&chModel.ChoreHistory{}).Count(&count).Error)
++	require.Equal(t, int64(1), count)
++	var user cModel.UserCircle
++	require.NoError(t, db.Where("user_id = ? AND circle_id = ?", 1, mop.CircleID).First(&user).Error)
++	require.Equal(t, 3, user.Points)
++}
++
++func TestHouseholdFloorResetStaleRelatedRollsBackWholeCompletion(t *testing.T) {
++	r, db, mop, due, next := householdCASFixture(t)
++	vacuum := mop
++	vacuum.ID = 901
++	require.NoError(t, db.Create(&vacuum).Error)
++	require.NoError(t, db.Create(&chModel.ChoreAssignees{ChoreID: vacuum.ID, UserID: 1}).Error)
++	stale := vacuum
++	stale.SyncVersion = 6
++	require.ErrorIs(t, r.CompleteChore(context.Background(), &mop, nil, 1, &next, &due, nil, true,
++		HouseholdFloorReset{Chore: &stale, NextDueDate: &next}), ErrChoreConflict)
++	var actual chModel.Chore
++	require.NoError(t, db.First(&actual, mop.ID).Error)
++	require.Equal(t, due, *actual.NextDueDate)
++	require.Equal(t, int64(7), actual.SyncVersion)
++	var count int64
++	require.NoError(t, db.Model(&chModel.ChoreHistory{}).Count(&count).Error)
++	require.Equal(t, int64(0), count)
++	var user cModel.UserCircle
++	require.NoError(t, db.Where("user_id = ? AND circle_id = ?", 1, mop.CircleID).First(&user).Error)
++	require.Equal(t, 0, user.Points)
++}
+diff --git a/internal/chore/repo/repository.go b/internal/chore/repo/repository.go
+index edcb97c..ca3f4cf 100644
+--- a/internal/chore/repo/repository.go
++++ b/internal/chore/repo/repository.go
+@@ -18,6 +18,23 @@ import (
+ 	"gorm.io/gorm/clause"
+ )
+ 
++// ErrChoreConflict rejects a replaced occurrence snapshot.
++var ErrChoreConflict = errors.New("chore version conflict")
++
++func compareAndUpdateChore(tx *gorm.DB, chore *chModel.Chore, updates map[string]interface{}) error {
++	if chore.SyncVersion <= 0 {
++		return ErrChoreConflict
++	}
++	result := tx.Model(&chModel.Chore{}).Where("id = ? AND circle_id = ? AND sync_version = ?", chore.ID, chore.CircleID, chore.SyncVersion).Updates(updates)
++	if result.Error != nil {
++		return result.Error
++	}
++	if result.RowsAffected != 1 {
++		return ErrChoreConflict
++	}
++	return nil
++}
++
+ type ChoreRepository struct {
+ 	db     *gorm.DB
+ 	dbType string
+@@ -123,7 +140,8 @@ func choreViewerSet(chore *chModel.Chore, assigneeIDs []int, circleUserIDs []int
+ // UpdateChoreVisibility atomically updates a chore and its complete assignee set,
+ // recording a user-scoped tombstone for each circle member who loses visibility.
+ func (r *ChoreRepository) UpdateChoreVisibility(ctx context.Context, chore *chModel.Chore, assigneeIDs []int) error {
+-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++	var committedVersion int64
++	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+ 		lockedQuery := func() *gorm.DB {
+ 			q := tx.WithContext(ctx)
+ 			if r.dbType == "postgres" {
+@@ -165,9 +183,23 @@ func (r *ChoreRepository) UpdateChoreVisibility(ctx context.Context, chore *chMo
+ 		if err != nil {
+ 			return err
+ 		}
+-		chore.SyncVersion = firstVersion
+-		if err := tx.WithContext(ctx).Save(chore).Error; err != nil {
+-			return err
++		expectedVersion := chore.SyncVersion
++		if expectedVersion == 0 {
++			expectedVersion = previousChore.SyncVersion
++		}
++		if expectedVersion != previousChore.SyncVersion {
++			return ErrChoreConflict
++		}
++		updates := *chore
++		updates.SyncVersion = firstVersion
++		result := tx.WithContext(ctx).Model(&chModel.Chore{}).
++			Where("id = ? AND circle_id = ? AND sync_version = ?", chore.ID, chore.CircleID, expectedVersion).
++			Select("*").Omit("id", "created_at").Updates(&updates)
++		if result.Error != nil {
++			return result.Error
++		}
++		if result.RowsAffected != 1 {
++			return ErrChoreConflict
+ 		}
+ 
+ 		if err := tx.WithContext(ctx).Where("chore_id = ?", chore.ID).Delete(&chModel.ChoreAssignees{}).Error; err != nil {
+@@ -203,8 +235,13 @@ func (r *ChoreRepository) UpdateChoreVisibility(ctx context.Context, chore *chMo
+ 				return err
+ 			}
+ 		}
++		committedVersion = firstVersion
+ 		return nil
+ 	})
++	if err == nil {
++		chore.SyncVersion = committedVersion
++	}
++	return err
+ }
+ 
+ func (r *ChoreRepository) UpdateChorePriority(c context.Context, userID int, choreID int, priority int, circleID int) error {
+@@ -410,14 +447,18 @@ func (r *ChoreRepository) SoftDelete(c context.Context, id int, userID int, circ
+ }
+ 
+ func (r *ChoreRepository) SetChorePendingApproval(c context.Context, chore *chModel.Chore, note *string, userID int, completedDate *time.Time) error {
+-	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
+-	if err != nil {
+-		return err
+-	}
+-	err = r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++	return r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++		nextVersion, err := r.nextSyncVersionWithDB(c, tx, chore.CircleID)
++		if err != nil {
++			return err
++		}
++		if err := compareAndUpdateChore(tx, chore, map[string]interface{}{"status": chModel.ChoreStatusPendingApproval, "sync_version": nextVersion}); err != nil {
++			return err
++		}
++
+ 		// Look for existing chore history with start or pause status
+ 		var existingHistory chModel.ChoreHistory
+-		err := tx.Where("chore_id = ? AND status = ? ",
++		err = tx.Where("chore_id = ? AND status = ? ",
+ 			chore.ID, chModel.ChoreHistoryStatusStarted).
+ 			First(&existingHistory).Error
+ 
+@@ -449,14 +490,6 @@ func (r *ChoreRepository) SetChorePendingApproval(c context.Context, chore *chMo
+ 			return err
+ 		}
+ 
+-		// Set chore status to pending approval
+-		if err := tx.Model(&chModel.Chore{}).Where("id = ?", chore.ID).Updates(map[string]interface{}{
+-			"status":       chModel.ChoreStatusPendingApproval,
+-			"sync_version": nextVersion,
+-		}).Error; err != nil {
+-			return err
+-		}
+-
+ 		// if there is any time session associated with the chore, mark them as finished:
+ 		var timeSessions []*chModel.TimeSession
+ 		tx.Model(&chModel.TimeSession{}).Where("chore_id = ? AND status < ?", chore.ID, chModel.TimeSessionStatusCompleted).Find(&timeSessions)
+@@ -471,15 +504,14 @@ func (r *ChoreRepository) SetChorePendingApproval(c context.Context, chore *chMo
+ 
+ 		return nil
+ 	})
+-	return err
+ }
+ 
+ func (r *ChoreRepository) ApproveChore(c context.Context, chore *chModel.Chore, adminUserID int, dueDate *time.Time, nextAssignedTo *int, applyPoints bool) error {
+-	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
+-	if err != nil {
+-		return err
+-	}
+-	err = r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++	return r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++		nextVersion, err := r.nextSyncVersionWithDB(c, tx, chore.CircleID)
++		if err != nil {
++			return err
++		}
+ 		choreUpdates := map[string]interface{}{}
+ 		choreUpdates["next_due_date"] = dueDate
+ 		choreUpdates["status"] = chModel.ChoreStatusNoStatus
+@@ -492,9 +524,13 @@ func (r *ChoreRepository) ApproveChore(c context.Context, chore *chModel.Chore,
+ 			choreUpdates["is_active"] = false
+ 		}
+ 
++		if err := compareAndUpdateChore(tx, chore, choreUpdates); err != nil {
++			return err
++		}
++
+ 		// Get the latest history entry that's pending approval and update it to completed
+ 		var history chModel.ChoreHistory
+-		err := tx.Where("chore_id = ? AND status = ?", chore.ID, chModel.ChoreHistoryStatusPendingApproval).
++		err = tx.Where("chore_id = ? AND status = ?", chore.ID, chModel.ChoreHistoryStatusPendingApproval).
+ 			Order("performed_at desc").
+ 			First(&history).Error
+ 		if err != nil {
+@@ -518,14 +554,8 @@ func (r *ChoreRepository) ApproveChore(c context.Context, chore *chModel.Chore,
+ 			return err
+ 		}
+ 
+-		// Perform the update operation once, using the prepared updates map.
+-		if err := tx.Model(&chModel.Chore{}).Where("id = ?", chore.ID).Updates(choreUpdates).Error; err != nil {
+-			return err
+-		}
+-
+ 		return nil
+ 	})
+-	return err
+ }
+ 
+ func (r *ChoreRepository) RejectChore(c context.Context, choreID int, circleID int, rejectionNote *string) error {
+@@ -564,12 +594,19 @@ func (r *ChoreRepository) RejectChore(c context.Context, choreID int, circleID i
+ 	})
+ }
+ 
+-func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore, note *string, userID int, dueDate *time.Time, completedDate *time.Time, nextAssignedTo *int, applyPoints bool) error {
+-	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
+-	if err != nil {
+-		return err
+-	}
+-	err = r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++// HouseholdFloorReset advances a related floor task without history or points.
++// Its expected version and next date are verified by the authenticated handler.
++type HouseholdFloorReset struct {
++	Chore       *chModel.Chore
++	NextDueDate *time.Time
++}
++
++func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore, note *string, userID int, dueDate *time.Time, completedDate *time.Time, nextAssignedTo *int, applyPoints bool, floorResets ...HouseholdFloorReset) error {
++	return r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++		nextVersion, err := r.nextSyncVersionWithDB(c, tx, chore.CircleID)
++		if err != nil {
++			return err
++		}
+ 
+ 		choreUpdates := map[string]interface{}{}
+ 		choreUpdates["next_due_date"] = dueDate
+@@ -588,9 +625,34 @@ func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore,
+ 			choreUpdates["is_active"] = false
+ 		}
+ 
++		if err := compareAndUpdateChore(tx, chore, choreUpdates); err != nil {
++			return err
++		}
++
++		seen := map[int]bool{chore.ID: true}
++		if len(floorResets) > 250 {
++			return ErrChoreConflict
++		}
++		for _, reset := range floorResets {
++			if reset.Chore == nil || seen[reset.Chore.ID] || reset.Chore.CircleID != chore.CircleID ||
++				!reset.Chore.IsActive || reset.Chore.RequireApproval || reset.NextDueDate == nil {
++				return ErrChoreConflict
++			}
++			seen[reset.Chore.ID] = true
++			version, err := r.nextSyncVersionWithDB(c, tx, chore.CircleID)
++			if err != nil {
++				return err
++			}
++			if err := compareAndUpdateChore(tx, reset.Chore, map[string]interface{}{
++				"next_due_date": reset.NextDueDate, "sync_version": version,
++			}); err != nil {
++				return err
++			}
++		}
++
+ 		// Look for existing chore history with start or pause status
+ 		var existingHistory chModel.ChoreHistory
+-		err := tx.Where("chore_id = ? AND status = ? ",
++		err = tx.Where("chore_id = ? AND status = ? ",
+ 			chore.ID, chModel.ChoreHistoryStatusStarted).
+ 			First(&existingHistory).Error
+ 
+@@ -625,10 +687,6 @@ func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore,
+ 			}
+ 		}
+ 		ch.SyncVersion = nextVersion
+-		// Perform the update operation once, using the prepared updates map.
+-		if err := tx.Model(&chModel.Chore{}).Where("id = ?", chore.ID).Updates(choreUpdates).Error; err != nil {
+-			return err
+-		}
+ 
+ 		if err := tx.Save(ch).Error; err != nil {
+ 			return err
+@@ -647,15 +705,14 @@ func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore,
+ 
+ 		return nil
+ 	})
+-	return err
+ }
+ 
+ func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, userID int, dueDate *time.Time, nextAssignedTo *int, skippedAt *time.Time) error {
+-	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
+-	if err != nil {
+-		return err
+-	}
+-	err = r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++	return r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
++		nextVersion, err := r.nextSyncVersionWithDB(c, tx, chore.CircleID)
++		if err != nil {
++			return err
++		}
+ 		choreUpdates := map[string]interface{}{}
+ 		choreUpdates["next_due_date"] = dueDate
+ 		choreUpdates["status"] = chModel.ChoreStatusNoStatus
+@@ -668,9 +725,13 @@ func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, use
+ 			choreUpdates["is_active"] = false
+ 		}
+ 
++		if err := compareAndUpdateChore(tx, chore, choreUpdates); err != nil {
++			return err
++		}
++
+ 		// Look for existing chore history with start or pause status
+ 		var existingHistory chModel.ChoreHistory
+-		err := tx.Where("chore_id = ? AND status = ? ",
++		err = tx.Where("chore_id = ? AND status = ? ",
+ 			chore.ID, chModel.ChoreHistoryStatusStarted).
+ 			First(&existingHistory).Error
+ 
+@@ -703,10 +764,6 @@ func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, use
+ 		}
+ 
+ 		ch.SyncVersion = nextVersion
+-		// Perform the update operation once, using the prepared updates map.
+-		if err := tx.Model(&chModel.Chore{}).Where("id = ?", chore.ID).Updates(choreUpdates).Error; err != nil {
+-			return err
+-		}
+ 
+ 		if err := tx.Save(ch).Error; err != nil {
+ 			return err
+@@ -726,7 +783,6 @@ func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, use
+ 
+ 		return nil
+ 	})
+-	return err
+ }
+ 
+ func (r *ChoreRepository) GetChoreHistory(c context.Context, choreID int) ([]*chModel.ChoreHistory, error) {
+diff --git a/internal/chore/scheduler.go b/internal/chore/scheduler.go
+index c0e3ae6..5775cdd 100644
+--- a/internal/chore/scheduler.go
++++ b/internal/chore/scheduler.go
+@@ -47,15 +47,19 @@ func scheduleNextDueDate(ctx context.Context, chore *chModel.Chore, completedDat
+ 		baseDate = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
+ 	}
+ 
++	interval := chore.Frequency
++	if interval < 1 {
++		interval = 1
++	}
+ 	switch chore.FrequencyType {
+ 	case "daily":
+-		baseDate = baseDate.AddDate(0, 0, 1)
++		baseDate = baseDate.AddDate(0, 0, interval)
+ 	case "weekly":
+-		baseDate = baseDate.AddDate(0, 0, 7)
++		baseDate = baseDate.AddDate(0, 0, 7*interval)
+ 	case "monthly":
+-		baseDate = baseDate.AddDate(0, 1, 0)
++		baseDate = baseDate.AddDate(0, interval, 0)
+ 	case "yearly":
+-		baseDate = baseDate.AddDate(1, 0, 0)
++		baseDate = baseDate.AddDate(interval, 0, 0)
+ 	case "adaptive":
+ 		// TODO: Implement a more sophisticated adaptive logic
+ 		diff := completedDate.UTC().Sub(chore.NextDueDate.UTC())
+diff --git a/internal/chore/scheduler_test.go b/internal/chore/scheduler_test.go
+index f7504dc..94079b0 100644
+--- a/internal/chore/scheduler_test.go
++++ b/internal/chore/scheduler_test.go
+@@ -662,3 +662,29 @@ func TestScheduleNextDueDateWeekPatterns(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestHouseholdConfiguredCalendarIntervalsAndFloorReset(t *testing.T) {
++	due := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
++	completed := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
++	for _, tc := range []struct {
++		kind      chModel.FrequencyType
++		frequency int
++		expected  time.Time
++	}{
++		{"daily", 3, completed.AddDate(0, 0, 3)},
++		{"weekly", 2, completed.AddDate(0, 0, 14)},
++		{"monthly", 2, completed.AddDate(0, 2, 0)},
++		{"yearly", 2, completed.AddDate(2, 0, 0)},
++	} {
++		t.Run(string(tc.kind), func(t *testing.T) {
++			chore := &chModel.Chore{FrequencyType: tc.kind, Frequency: tc.frequency, NextDueDate: &due, IsRolling: true}
++			actual, err := scheduleNextDueDate(context.Background(), chore, completed)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if actual == nil || !actual.Equal(tc.expected) {
++				t.Fatalf("wrong interval: got %v want %v", actual, tc.expected)
++			}
++		})
++	}
++}
